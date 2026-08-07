@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Transparent Circular Visualizer Export</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body, html {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #111;
+            background-image: linear-gradient(45deg, #1d1d1d 25%, transparent 25%), 
+                              linear-gradient(-45deg, #1d1d1d 25%, transparent 25%), 
+                              linear-gradient(45deg, transparent 75%, #1d1d1d 75%), 
+                              linear-gradient(-45deg, transparent 75%, #1d1d1d 75%);
+            background-size: 20px 20px;
+            background-position: 0 0, 0 10px, 10px -10px, -10px 0;
+        }
+
+        /* Control Menu Style */
+        #control-panel {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            background: rgba(0, 0, 0, 0.9);
+            color: #fff;
+            padding: 20px;
+            border-radius: 8px;
+            z-index: 10;
+            width: 320px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.5);
+            max-height: 90vh;
+            overflow-y: auto;
+        }
+
+        #control-panel.hidden {
+            opacity: 0;
+            pointer-events: none;
+        }
+
+        .menu-group {
+            margin-bottom: 15px;
+        }
+
+        .menu-group label {
+            display: block;
+            margin-bottom: 5px;
+            font-size: 14px;
+            font-weight: bold;
+        }
+
+        .menu-group input[type="file"], select {
+            width: 100%;
+            background: #222;
+            color: #fff;
+            padding: 8px;
+            border: 1px solid #444;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+
+        audio {
+            width: 100%;
+            margin-top: 5px;
+        }
+
+        button {
+            width: 100%;
+            padding: 10px;
+            background: #007bff;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            font-weight: bold;
+            cursor: pointer;
+            margin-top: 5px;
+        }
+
+        button:hover {
+            background: #0056b3;
+        }
+
+        #record-btn.recording {
+            background: #dc3545;
+        }
+
+        #toggle-menu-btn {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            z-index: 11;
+            width: auto;
+            background: #222;
+            border: 1px solid #555;
+        }
+
+        #toggle-menu-btn:hover {
+            background: #444;
+        }
+
+        /* Visualizer Layout Container */
+        #visualizer-container {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 100%;
+            height: 100%;
+        }
+
+        canvas {
+            box-shadow: 0 0 20px rgba(0,0,0,0.5);
+        }
+    </style>
+</head>
+<body>
+
+    <button id="toggle-menu-btn" onclick="toggleMenu()">Hide Menu</button>
+
+    <div id="control-panel">
+        <h3>Visualizer Controls</h3>
+        <hr style="margin: 10px 0; border-color: #444;">
+        
+        <div class="menu-group">
+            <label for="audio-input">1. Load Audio File</label>
+            <input type="file" id="audio-input" accept="audio/*">
+            <audio id="audio-player" controls></audio>
+        </div>
+
+        <div class="menu-group">
+            <label for="image-input">2. Load Your Icon</label>
+            <input type="file" id="image-input" accept="image/*">
+        </div>
+
+        <hr style="margin: 15px 0; border-color: #444;">
+        <h3>Export Settings</h3>
+        <br>
+
+        <div class="menu-group">
+            <label for="quality-input">Video Quality (Bitrate)</label>
+            <select id="quality-input">
+                <option value="2500000">Standard (2.5 Mbps)</option>
+                <option value="5000000" selected>High (5 Mbps)</option>
+                <option value="8000000">Production (8 Mbps)</option>
+            </select>
+        </div>
+
+        <button id="record-btn" onclick="toggleRecording()">Start Recording</button>
+        <p id="status-text" style="font-size: 12px; color: #aaa; margin-top: 5px; text-align: center;"></p>
+    </div>
+
+    <div id="visualizer-container">
+        <canvas id="master-canvas" width="600" height="600"></canvas>
+    </div>
+
+    <script>
+        const audioInput = document.getElementById('audio-input');
+        const imageInput = document.getElementById('image-input');
+        const audioPlayer = document.getElementById('audio-player');
+        const canvas = document.getElementById('master-canvas');
+        const ctx = canvas.getContext('2d');
+        const controlPanel = document.getElementById('control-panel');
+        const toggleBtn = document.getElementById('toggle-menu-btn');
+        const recordBtn = document.getElementById('record-btn');
+        const qualityInput = document.getElementById('quality-input');
+        const statusText = document.getElementById('status-text');
+
+        let audioCtx, analyser, source, bufferLength, dataArray, animationFrameId;
+        let mediaRecorder;
+        let recordedChunks = [];
+        let isRecording = false;
+        
+        let userImg = new Image();
+        let isImgLoaded = false;
+        let spinAngle = 0;
+
+        function toggleMenu() {
+            controlPanel.classList.toggle('hidden');
+            toggleBtn.innerText = controlPanel.classList.contains('hidden') ? "Show Menu" : "Hide Menu";
+        }
+
+        imageInput.addEventListener('change', function(e) {
+            const file = e.target.files[0];
+            if (file) {
+                const reader = new FileReader();
+                reader.onload = function(event) {
+                    userImg.src = event.target.result;
+                    userImg.onload = () => { isImgLoaded = true; };
+                };
+                reader.readAsDataURL(file);
+            }
+        });
+
+        audioInput.addEventListener('change', function(e) {
+            const file = e.target.files[0];
+            if (file) {
+                audioPlayer.src = URL.createObjectURL(file);
+                setupVisualizer();
+            }
+        });
+
+        function setupVisualizer() {
+            if (!audioCtx) {
+                audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                analyser = audioCtx.createAnalyser();
+                source = audioCtx.createMediaElementSource(audioPlayer);
+                source.connect(analyser);
+                analyser.connect(audioCtx.destination);
+                
+                analyser.fftSize = 128; 
+                bufferLength = analyser.frequencyBinCount;
+                dataArray = new Uint8Array(bufferLength);
+            }
+            if (!animationFrameId) draw();
+        }
+
+        function draw() {
+            animationFrameId = requestAnimationFrame(draw);
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            const centerX = canvas.width / 2;
+            const centerY = canvas.height / 2;
+            const baseRadius = 120; 
+
+            if (analyser) {
+                analyser.getByteFrequencyData(dataArray);
+            }
+
+            // 1. Render Audio Equalizer Bars wrapped around the 360 degree space
+            const barWidth = 4;
+            const activeBarsCount = Math.floor(bufferLength * 0.85);
+
+            for (let i = 0; i < activeBarsCount; i++) {
+                let val = dataArray ? dataArray[i] : 0;
+                let barHeight = (val / 255) * 90;
+                if (barHeight < 4) barHeight = 4; 
+
+                let angle = (i / activeBarsCount) * Math.PI * 2;
+
+                ctx.save();
+                ctx.translate(centerX, centerY);
+                ctx.rotate(angle);
+
+                ctx.beginPath();
+                ctx.roundRect(-barWidth / 2, -baseRadius - barHeight, barWidth, barHeight, 2);
+                
+                // Crisp black stroke directly outlining each individual spike bar
+                ctx.strokeStyle = '#000000';
+                ctx.lineWidth = 2.5;
+                ctx.stroke();
+
+                // Solid white inner fill
+                ctx.fillStyle = '#ffffff';
+                ctx.fill();
+                
+                ctx.restore();
+            }
+
+            // 2. Render Center Spinning Icon with Horizontal 3D Coin Flip
+            spinAngle += 0.03; 
+            
+            ctx.save();
+            ctx.translate(centerX, centerY);
+            
+            let scaleX = Math.cos(spinAngle);
+            ctx.scale(scaleX, 1); 
+
+            const size = 130;
+            if (isImgLoaded) {
+                // Circular clip mask strictly for framing the user's avatar image, no borders added
+                ctx.beginPath();
+                ctx.arc(0, 0, size / 2, 0, Math.PI * 2);
+                ctx.clip();
+                ctx.drawImage(userImg, -size/2, -size/2, size, size);
+            } else {
+                // Original default white placeholder (unchanged)
+                ctx.strokeStyle = '#ffffff';
+                ctx.lineWidth = 4;
+                ctx.strokeRect(-35, -35, 70, 70);
+                ctx.beginPath();
+                ctx.moveTo(-20, 0); ctx.lineTo(20, 0);
+                ctx.moveTo(0, -20); ctx.lineTo(0, 20);
+                ctx.stroke();
+            }
+            ctx.restore();
+
+            // Inner boundary track line (Pure white, un-stroked as original layout)
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.4)';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.arc(centerX, centerY, baseRadius - 4, 0, Math.PI * 2);
+            ctx.stroke();
+        }
+
+        draw();
+
+        // RECORD & EXPORT SYSTEM
+        function toggleRecording() {
+            if (!isRecording) {
+                startRecording();
+            } else {
+                stopRecording();
+            }
+        }
+
+        function startRecording() {
+            if (!audioCtx) {
+                alert("Please load an audio file first!");
+                return;
+            }
+
+            recordedChunks = [];
+            const videoStream = canvas.captureStream(60);
+            
+            const audioDestination = audioCtx.createMediaStreamDestination();
+            source.connect(audioDestination);
+            const audioStream = audioDestination.stream;
+
+            const combinedStream = new MediaStream([
+                ...videoStream.getVideoTracks(),
+                ...audioStream.getAudioTracks()
+            ]);
+
+            const videoBitrate = parseInt(qualityInput.value);
+            
+            let options = { mimeType: 'video/webm;codecs=vp9', videoBitsPerSecond: videoBitrate };
+            
+            if (!MediaRecorder.isTypeSupported(options.mimeType)) {
+                options = { mimeType: 'video/webm;codecs=vp8', videoBitsPerSecond: videoBitrate };
+            }
+
+            mediaRecorder = new MediaRecorder(combinedStream, options);
+
+            mediaRecorder.ondataavailable = (e) => {
+                if (e.data.size > 0) recordedChunks.push(e.data);
+            };
+
+            mediaRecorder.onstop = () => {
+                const blob = new Blob(recordedChunks, { type: 'video/webm' });
+                const url = URL.createObjectURL(blob);
+                
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = 'circular-transparent-visualizer.webm';
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                
+                statusText.innerText = "Export Complete! (Downloaded alpha-channel transparent .webm)";
+            };
+
+            mediaRecorder.start();
+            audioPlayer.play();
+            isRecording = true;
+            recordBtn.innerText = "Stop & Save Video";
+            recordBtn.classList.add('recording');
+            statusText.innerText = "Recording transparent track stream...";
+        }
+
+        function stopRecording() {
+            if (mediaRecorder && isRecording) {
+                mediaRecorder.stop();
+                audioPlayer.pause();
+                isRecording = false;
+                recordBtn.innerText = "Start Recording";
+                recordBtn.classList.remove('recording');
+            }
+        }
+
+        window.addEventListener('click', () => {
+            if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+        });
+    </script>
+</body>
+</html>
